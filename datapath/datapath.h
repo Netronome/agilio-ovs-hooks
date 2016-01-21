@@ -87,6 +87,9 @@ struct datapath {
 	/* Stats. */
 	struct dp_stats_percpu __percpu *stats_percpu;
 
+	/* Hardware offload ptr. */
+	void *offload;
+
 	/* Network namespace ref. */
 	possible_net_t net;
 

@@ -173,6 +173,8 @@ struct sw_flow {
 	int stats_last_writer;		/* NUMA-node id of the last writer on
 					 * 'stats[0]'.
 					 */
+	void *offload;
+	struct sw_flow_key ntr_unmasked;
 	struct sw_flow_key key;
 	struct sw_flow_id id;
 	struct sw_flow_mask *mask;

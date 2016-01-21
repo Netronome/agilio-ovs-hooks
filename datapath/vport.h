@@ -102,6 +102,9 @@ struct vport {
 
 	struct list_head detach_list;
 	struct rcu_head rcu;
+
+	/* Hardware offload ptr. */
+	void *offload;
 };
 
 /**

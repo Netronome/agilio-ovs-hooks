@@ -61,6 +61,7 @@
 #include "vlan.h"
 #include "vport-internal_dev.h"
 #include "vport-netdev.h"
+#include "offload_ops.h"
 
 int ovs_net_id __read_mostly;
 EXPORT_SYMBOL_GPL(ovs_net_id);
@@ -718,6 +719,7 @@ static void get_dp_stats(const struct datapath *dp, struct ovs_dp_stats *stats,
 		stats->n_lost += local_stats.n_lost;
 		mega_stats->n_mask_hit += local_stats.n_mask_hit;
 	}
+	ovs_offload_dp_stats_get(dp, stats);
 }
 
 static bool should_fill_key(const struct sw_flow_id *sfid, uint32_t ufid_flags)
@@ -773,6 +775,7 @@ static int ovs_flow_cmd_fill_stats(const struct sw_flow *flow,
 	unsigned long used;
 
 	ovs_flow_stats_get(flow, &stats, &used, &tcp_flags);
+	ovs_offload_flow_stats_get(flow, &stats, &used, &tcp_flags);
 
 	if (used &&
 	    nla_put_u64(skb, OVS_FLOW_ATTR_USED, ovs_flow_used_time(used)))
@@ -1004,11 +1007,14 @@ static int ovs_flow_cmd_new(struct sk_buff *skb, struct genl_info *info)
 		rcu_assign_pointer(new_flow->sf_acts, acts);
 
 		/* Put flow in bucket. */
+		new_flow->offload = NULL;
 		error = ovs_flow_tbl_insert(&dp->table, new_flow, &mask);
 		if (unlikely(error)) {
 			acts = NULL;
 			goto err_unlock_ovs;
 		}
+		new_flow->ntr_unmasked = *match.key;
+		ovs_offload_flow_new(new_flow);
 
 		if (unlikely(reply)) {
 			error = ovs_flow_cmd_fill_info(new_flow,
@@ -1184,6 +1190,8 @@ static int ovs_flow_cmd_set(struct sk_buff *skb, struct genl_info *info)
 						       ufid_flags);
 			BUG_ON(error < 0);
 		}
+		flow->ntr_unmasked = *match.key;
+		ovs_offload_flow_set(flow);
 	} else {
 		/* Could not alloc without acts before locking. */
 		reply = ovs_flow_cmd_build_info(flow, ovs_header->dp_ifindex,
@@ -1197,8 +1205,10 @@ static int ovs_flow_cmd_set(struct sk_buff *skb, struct genl_info *info)
 	}
 
 	/* Clear stats. */
-	if (a[OVS_FLOW_ATTR_CLEAR])
+	if (a[OVS_FLOW_ATTR_CLEAR]) {
 		ovs_flow_stats_clear(flow);
+		ovs_offload_flow_stats_clear(flow);
+	}
 	ovs_unlock();
 
 	if (reply)
@@ -1322,6 +1332,7 @@ static int ovs_flow_cmd_del(struct sk_buff *skb, struct genl_info *info)
 		goto unlock;
 	}
 
+	ovs_offload_flow_del(flow);
 	ovs_flow_tbl_remove(&dp->table, flow);
 	ovs_unlock();
 
@@ -1619,6 +1630,7 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
 		goto err_destroy_ports_array;
 	}
 
+	ovs_offload_dp_new(dp);
 	err = ovs_dp_cmd_fill_info(dp, reply, info->snd_portid,
 				   info->snd_seq, 0, OVS_DP_CMD_NEW);
 	BUG_ON(err < 0);
@@ -1687,6 +1699,7 @@ static int ovs_dp_cmd_del(struct sk_buff *skb, struct genl_info *info)
 	if (IS_ERR(dp))
 		goto err_unlock_free;
 
+	ovs_offload_dp_del(dp);
 	err = ovs_dp_cmd_fill_info(dp, reply, info->snd_portid,
 				   info->snd_seq, 0, OVS_DP_CMD_DEL);
 	BUG_ON(err < 0);
@@ -1720,6 +1733,7 @@ static int ovs_dp_cmd_set(struct sk_buff *skb, struct genl_info *info)
 		goto err_unlock_free;
 
 	ovs_dp_change(dp, info->attrs);
+	ovs_offload_dp_set(dp);
 
 	err = ovs_dp_cmd_fill_info(dp, reply, info->snd_portid,
 				   info->snd_seq, 0, OVS_DP_CMD_NEW);
@@ -1854,6 +1868,7 @@ static int ovs_vport_cmd_fill_info(struct vport *vport, struct sk_buff *skb,
 		goto nla_put_failure;
 
 	ovs_vport_get_stats(vport, &vport_stats);
+	ovs_offload_vport_stats_get(vport, &vport_stats);
 	if (nla_put(skb, OVS_VPORT_ATTR_STATS, sizeof(struct ovs_vport_stats),
 		    &vport_stats))
 		goto nla_put_failure;
@@ -1997,6 +2012,7 @@ restart:
 	err = ovs_vport_cmd_fill_info(vport, reply, info->snd_portid,
 				      info->snd_seq, 0, OVS_VPORT_CMD_NEW);
 	BUG_ON(err < 0);
+	ovs_offload_vport_new(skb, vport, &parms);
 	ovs_unlock();
 
 	ovs_notify(&dp_vport_genl_family, &ovs_dp_vport_multicast_group, reply, info);
@@ -2048,6 +2064,7 @@ static int ovs_vport_cmd_set(struct sk_buff *skb, struct genl_info *info)
 	err = ovs_vport_cmd_fill_info(vport, reply, info->snd_portid,
 				      info->snd_seq, 0, OVS_VPORT_CMD_NEW);
 	BUG_ON(err < 0);
+	ovs_offload_vport_set(skb, vport, (struct vport_parms *)NULL);
 	ovs_unlock();
 
 	ovs_notify(&dp_vport_genl_family, &ovs_dp_vport_multicast_group, reply, info);
@@ -2084,6 +2101,7 @@ static int ovs_vport_cmd_del(struct sk_buff *skb, struct genl_info *info)
 	err = ovs_vport_cmd_fill_info(vport, reply, info->snd_portid,
 				      info->snd_seq, 0, OVS_VPORT_CMD_DEL);
 	BUG_ON(err < 0);
+	ovs_offload_vport_del(skb, vport, (struct vport_parms *)NULL);
 	ovs_dp_detach_port(vport);
 	ovs_unlock();
 
@@ -2362,8 +2380,14 @@ static int __init dp_init(void)
 	if (err < 0)
 		goto error_unreg_netdev;
 
+	err = ovs_offload_init_handler();
+	if (err)
+		goto error_unreg_genl;
+
 	return 0;
 
+error_unreg_genl:
+	dp_unregister_genl(ARRAY_SIZE(dp_genl_families));
 error_unreg_netdev:
 	ovs_netdev_exit();
 error_unreg_notifier:
@@ -2386,6 +2410,7 @@ error:
 
 static void dp_cleanup(void)
 {
+	ovs_offload_cleanup_handler();
 	dp_unregister_genl(ARRAY_SIZE(dp_genl_families));
 	ovs_netdev_exit();
 	unregister_netdevice_notifier(&ovs_dp_device_notifier);

@@ -17,6 +17,7 @@ build_modules = $(both_modules)	# Modules to build
 dist_modules = $(both_modules)	# Modules to distribute
 
 openvswitch_sources = \
+	offload_ops.c \
 	actions.c \
 	conntrack.c \
 	datapath.c \
@@ -35,6 +36,7 @@ vport_lisp_sources = vport-lisp.c
 vport_stt_sources = vport-stt.c
 
 openvswitch_headers = \
+	offload_ops.h \
 	compat.h \
 	conntrack.h \
 	datapath.h \
